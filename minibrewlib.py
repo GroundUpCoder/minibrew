@@ -89,7 +89,7 @@ class TarBall(Source):
 
     tarPath = f"{repoPath}.tar.gz"
 
-    with urlopen(self.url, 'rb') as uf:
+    with urlopen(self.url) as uf:
       with open(tarPath, 'wb') as tf:
         shutil.copyfileobj(uf, tf)
 
