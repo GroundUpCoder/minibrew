@@ -12,7 +12,8 @@ MINIBREW_PATH = os.path.dirname(os.path.realpath(__file__))
 REPOS_PATH = os.path.join(MINIBREW_PATH, 'repos')
 PKGS_PATH = os.path.join(MINIBREW_PATH, 'pkgs')
 INSTALL_JSON_PATH = os.path.join(PKGS_PATH, 'install.json')
-
+MSBUILD_SCRIPT_PATH = os.path.join(MINIBREW_PATH, 'scripts', 'msbuild.bat')
+_windows = os.name == 'nt'
 
 try:
   with open(INSTALL_JSON_PATH) as f:
@@ -121,7 +122,7 @@ class TarBall(Source):
 
 
 
-class BuildSteps(ABC):
+class BuildStep(ABC):
 
   @abstractmethod
   def makeInstall(self, repoPath: str) -> None:
@@ -132,7 +133,40 @@ class BuildSteps(ABC):
     pass
 
 
-class ConfigureAndMake(BuildSteps):
+class CombinedStep(BuildStep):
+  steps: typing.List[BuildStep]
+
+  def __init__(self, *steps: BuildStep) -> None:
+    self.steps = list(steps)
+
+  def makeInstall(self, repoPath: str) -> None:
+    for step in self.steps:
+      step.makeInstall(repoPath)
+
+  def getKey(self) -> str:
+    return (
+      f'{type(self).__name__}({",".join(s.getKey() for s in self.steps)})')
+
+
+class SwitchOnPlatform(BuildStep):
+  unix: BuildStep
+  windows: BuildStep
+
+  def __init__(self, *, unix: BuildStep, windows: BuildStep) -> None:
+    self.unix = unix
+    self.windows = windows
+
+  def makeInstall(self, repoPath: str) -> None:
+    if _windows:
+      return self.windows.makeInstall(repoPath)
+    return self.unix.makeInstall(repoPath)
+
+  def getKey(self) -> str:
+    return (
+      f'{type(self).__name__}({self.unix.getKey()},{self.windows.getKey()})')
+
+
+class ConfigureAndMake(BuildStep):
   additionalConfigureFlags: typing.List[str]
 
   def __init__(self, additionalConfigureFlags: typing.List[str]) -> None:
@@ -157,24 +191,78 @@ class ConfigureAndMake(BuildSteps):
     return f"{type(self).__name__}({','.join(self.additionalConfigureFlags)})"
 
 
+class CopyInclude(BuildStep):
+  relativeIncludePath: str
+
+  def __init__(self, relativeIncludePath: str) -> None:
+    self.relativeIncludePath = relativeIncludePath
+
+  def makeInstall(self, repoPath: str) -> None:
+    includePath = os.path.join(repoPath, self.relativeIncludePath)
+    dstIncludePath = os.path.join(PKGS_PATH, 'include')
+
+    os.makedirs(dstIncludePath, exist_ok=True)
+
+    for item in os.listdir(includePath):
+      itemPath = os.path.join(includePath, item)
+      if os.path.isdir(itemPath):
+        shutil.copytree(itemPath, os.path.join(dstIncludePath, item))
+      else:
+        shutil.copy(itemPath, dstIncludePath)
+    return super().makeInstall(repoPath)
+
+  def getKey(self) -> str:
+    return f'{type(self).__name__}({self.relativeIncludePath})'
+
+
+class MSBuild(BuildStep):
+  relativeProjectPath: str
+
+  def __init__(self, relativeProjectPath: str) -> None:
+    self.relativeProjectPath = relativeProjectPath
+
+  def makeInstall(self, repoPath: str) -> None:
+    projectPath = os.path.join(repoPath, self.relativeProjectPath)
+    artifactsPath = os.path.join(projectPath, 'x64', 'Release')
+
+    run(
+      [MSBUILD_SCRIPT_PATH, '/p:Configuration=Release'],
+      cwd=projectPath)
+
+    # Copy over outputs
+    libDirPath = os.path.join(PKGS_PATH, 'lib')
+    binDirPath = os.path.join(PKGS_PATH, 'bin')
+    os.makedirs(libDirPath, exist_ok=True)
+    os.makedirs(binDirPath, exist_ok=True)
+
+    for fileName in os.listdir(artifactsPath):
+      filePath = os.path.join(artifactsPath, fileName)
+      if fileName.endswith('.lib'):
+        shutil.copy(filePath, libDirPath)
+      else:
+        shutil.copy(filePath, binDirPath)
+
+  def getKey(self) -> str:
+    return f"{type(self).__name__}({self.relativeProjectPath})"
+
 configureAndMake = ConfigureAndMake([])
 
 
 class Package:
   name: str
   source: Source
-  buildSteps: BuildSteps
+  buildStep: BuildStep
   dependencies: typing.List['Package']
 
   def __init__(
       self,
       name: str,
       source: Source,
-      buildSteps: BuildSteps,
+      buildStep: BuildStep,
       dependencies: typing.List['Package']) -> None:
     self.name = name
     self.source = source
-    self.buildSteps = buildSteps
+    self.buildStep = buildStep
     self.dependencies = dependencies
     self.repoPath = os.path.join(REPOS_PATH, self.name)
 
@@ -182,11 +270,11 @@ class Package:
     self.source.get(self.repoPath)
 
   def _buildAndInstall(self) -> None:
-    self.buildSteps.makeInstall(self.repoPath)
+    self.buildStep.makeInstall(self.repoPath)
 
   def getKey(self) -> str:
     "Used to check if the given package has already been installed"
-    return f"{self.source.getKey()},{self.buildSteps.getKey()}"
+    return f"{self.source.getKey()},{self.buildStep.getKey()}"
 
   def _isInstalled(self) -> bool:
     "Is this specific version of this package currently installed"
@@ -194,22 +282,29 @@ class Package:
 
   def _walkDepTree(
       self,
-      seen: typing.Set['Package'],
+      seen: typing.Dict['Package', bool],
       alreadyInstalled: typing.List['Package'],
-      needToInstall: typing.List['Package']):
+      needToInstall: typing.List['Package']) -> bool:
     if self not in seen:
-      seen.add(self)
-      if self._isInstalled():
-        alreadyInstalled.append(self)
-      else:
-        for dep in self.dependencies:
+      seen[self] = False
+      depNeedsUpdating = False
+      for dep in self.dependencies:
+        depNeedsUpdating = (
           dep._walkDepTree(seen, alreadyInstalled, needToInstall)
+          or depNeedsUpdating
+        )
+      if self._isInstalled() and not depNeedsUpdating:
+        alreadyInstalled.append(self)
+        seen[self] = False
+      else:
         needToInstall.append(self)
+        seen[self] = True
+    return seen[self]
 
   def install(self):
     needToInstall: typing.List['Package'] = []
     alreadyInstalled: typing.List['Package'] = []
-    self._walkDepTree(set(), alreadyInstalled, needToInstall)
+    self._walkDepTree({}, alreadyInstalled, needToInstall)
 
     for pkg in alreadyInstalled:
       print(f'Skipping {pkg.name} (already installed)')
@@ -230,7 +325,7 @@ def pkg(
     *,
     name: str,
     source: Source,
-    buildSteps: BuildSteps=configureAndMake,
+    buildStep: BuildStep=configureAndMake,
     deps: typing.Iterable[str]=()):
 
   dependencies: typing.List[Package] = []
@@ -242,6 +337,6 @@ def pkg(
   packageMap[name] = Package(
     name=name,
     source=source,
-    buildSteps=buildSteps,
+    buildStep=buildStep,
     dependencies=dependencies,
   )

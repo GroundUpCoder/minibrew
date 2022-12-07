@@ -1,4 +1,8 @@
-from minibrewlib import pkg, Git, TarBall, ConfigureAndMake
+from minibrewlib import (
+  pkg, Git, TarBall,
+  configureAndMake,
+  ConfigureAndMake, SwitchOnPlatform, MSBuild, CombinedStep, CopyInclude,
+)
 
 
 pkg(
@@ -6,6 +10,13 @@ pkg(
   source=Git(
     repository='https://github.com/libsdl-org/SDL.git',
     commit='release-2.26.1',
+  ),
+  buildStep=SwitchOnPlatform(
+    unix=configureAndMake,
+    windows=CombinedStep(
+      CopyInclude('include'),
+      MSBuild('VisualC'),
+    ),
   ),
 )
 
@@ -16,7 +27,7 @@ pkg(
     commit='n5.1.2',
   ),
   deps=['sdl'],
-  buildSteps=ConfigureAndMake([
+  buildStep=ConfigureAndMake([
     '--enable-sdl',
     '--enable-ffplay',
   ]),
