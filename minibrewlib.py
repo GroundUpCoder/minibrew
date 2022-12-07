@@ -5,6 +5,8 @@ import subprocess
 import json
 import shutil
 import hashlib
+import tarfile
+from urllib.request import urlopen
 
 MINIBREW_PATH = os.path.dirname(os.path.realpath(__file__))
 REPOS_PATH = os.path.join(MINIBREW_PATH, 'repos')
@@ -84,19 +86,25 @@ class TarBall(Source):
     if os.path.exists(tmpDirPath):
       shutil.rmtree(tmpDirPath)
     os.makedirs(tmpDirPath)
+
     tarPath = f"{repoPath}.tar.gz"
-    run(['curl', self.url, '-o', tarPath], cwd=REPOS_PATH)
+
+    with urlopen(self.url, 'rb') as uf:
+      with open(tarPath, 'wb') as tf:
+        shutil.copyfileobj(uf, tf)
 
     if self.sha256:
       m = hashlib.sha256()
-      with open(os.path.join(REPOS_PATH, tarPath), 'rb') as f:
+      with open(tarPath, 'rb') as f:
         m.update(f.read())
       digest = m.hexdigest()
       if digest != self.sha256:
         raise AssertionError(
           f'TarBall {self.url} sha256 digest does not match')
 
-    run(['tar', 'zxvf', tarPath, '-C', tmpDirPath], cwd=REPOS_PATH)
+    # TODO: sanitize tar file extraction
+    with tarfile.open(tarPath) as tf:
+      tf.extractall(tmpDirPath)
     folderNames = os.listdir(tmpDirPath)
     if len(folderNames) != 1:
       raise Exception(
