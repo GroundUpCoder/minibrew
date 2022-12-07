@@ -80,7 +80,7 @@ class TarBall(Source):
 
   def get(self, repoPath: str) -> None:
     print('TarBall get')
-    tmpDirPath = os.path.join(REPOS_PATH, f"{repoPath}.tmp")
+    tmpDirPath = f"{repoPath}.tmp"
     if os.path.exists(repoPath):
       shutil.rmtree(repoPath)
     if os.path.exists(tmpDirPath):
@@ -105,6 +105,7 @@ class TarBall(Source):
     # TODO: sanitize tar file extraction
     with tarfile.open(tarPath) as tf:
       tf.extractall(tmpDirPath)
+
     folderNames = os.listdir(tmpDirPath)
     if len(folderNames) != 1:
       raise Exception(
