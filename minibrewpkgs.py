@@ -12,12 +12,56 @@ pkg(
     commit='release-2.26.1',
   ),
   buildStep=SwitchOnPlatform(
-    unix=configureAndMake,
+    unix=ConfigureAndMake([
+      '--disable-system-iconv',
+    ]),
     windows=CombinedStep(
       CopyInclude('include'),
       MSBuild('VisualC'),
     ),
   ),
+)
+
+pkg(
+  name='freetype',
+  source=TarBall(
+    # This is the version that homebrew is currently using as of Jan 4, 2023
+    'https://download.savannah.gnu.org/releases/freetype/freetype-2.12.1.tar.xz',
+  ),
+  buildStep=ConfigureAndMake([
+    '--enable-freetype-config',
+    '--without-harfbuzz',
+  ]),
+)
+
+pkg(
+  name='libpng',
+  source=TarBall(
+    # This is the version that homebrew is currently using as of Jan 4, 2023
+    'https://downloads.sourceforge.net/project/libpng/libpng16/1.6.39/libpng-1.6.39.tar.xz',
+  ),
+  buildStep=ConfigureAndMake([
+    '--disable-dependency-tracking',
+    '--disable-silent-rules',
+  ]),
+)
+
+# TODO: comparing with homebrew, I don't have all the deps yet.
+# Currently broken
+pkg(
+  name='sdl_ttf',
+  source=TarBall(
+    'https://github.com/libsdl-org/SDL_ttf/archive/refs/tags/release-2.20.1.tar.gz',
+  ),
+  buildStep=SwitchOnPlatform(
+    unix=ConfigureAndMake([
+    ]),
+    windows=CombinedStep(
+      CopyInclude('include'),
+      MSBuild('VisualC'),
+    ),
+  ),
+  deps=['freetype', 'sdl', 'libpng'],
 )
 
 pkg(
